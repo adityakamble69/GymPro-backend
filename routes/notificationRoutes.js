@@ -6,7 +6,7 @@ const { verifyToken } = require("../middleware/authMiddleware");
 // ── AUTO-GENERATE notifications from live DB data ─────────────────────────────
 function generateNotifications(callback) {
     const inserts = [];
-    let pending = 4;
+    let pending = 5;
     const done = () => { if (--pending === 0) callback(inserts); };
 
     // 1. Expired memberships
@@ -78,6 +78,30 @@ function generateNotifications(callback) {
                 message: `${r.full_name} ne inquiry ki hai — reply pending hai`,
                 ref_id: r.id, ref_type: "inquiry"
             }));
+            done();
+        }
+    );
+
+    // 5. Overdue balance payments (due_date set and crossed)
+    db.query(
+        `SELECT p.id, p.due_amount, p.amount, p.due_date,
+                m.id AS member_id, m.full_name
+         FROM payments p
+         JOIN members m ON p.member_id = m.id
+         WHERE p.status = 'pending'
+           AND p.due_date IS NOT NULL
+           AND p.due_date < CURDATE()`,
+        (err, rows) => {
+            if (!err && rows) rows.forEach(r => {
+                const amt = r.due_amount > 0 ? r.due_amount : r.amount;
+                const dueDateStr = new Date(r.due_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+                inserts.push({
+                    type: "payment_overdue",
+                    title: "Balance Payment Overdue",
+                    message: `${r.full_name} ne ₹${Number(amt).toLocaleString("en-IN")} nahi bhara — due date thi ${dueDateStr}`,
+                    ref_id: r.member_id, ref_type: "member"
+                });
+            });
             done();
         }
     );

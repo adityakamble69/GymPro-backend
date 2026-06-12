@@ -258,7 +258,7 @@ router.get("/member/:memberId/plan-history", verifyToken, (req, res) => {
 
 // ── ADD PAYMENT ───────────────────────────────────────────────────────────────
 router.post("/", verifyToken, (req, res) => {
-    const { member_id, amount, paid_amount, payment_date, payment_method, payment_for, status, months_covered, notes, plan_name, plan_start, plan_end } = req.body;
+    const { member_id, amount, paid_amount, payment_date, payment_method, payment_for, status, months_covered, notes, plan_name, plan_start, plan_end, due_date } = req.body;
 
     if (!member_id || !amount || !payment_date)
         return res.status(400).json({ success: false, message: "member_id, amount and payment_date are required" });
@@ -270,10 +270,12 @@ router.post("/", verifyToken, (req, res) => {
     const dueAmt      = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
     const finalStatus = dueAmt > 0 ? "pending" : (status || "paid");
     const receivedBy  = req.admin?.id ?? null;
+    // due_date: only save when balance is due
+    const finalDueDate = (dueAmt > 0 && due_date) ? due_date : null;
 
     db.query(
-        `INSERT INTO payments (member_id, amount, paid_amount, due_amount, payment_date, payment_method, payment_for, status, months_covered, notes, received_by, plan_name, plan_start, plan_end) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [member_id, totalAmt, paidAmt, dueAmt, payment_date, payment_method || "cash", payment_for || "monthly", finalStatus, parseInt(months_covered) || 1, notes || null, receivedBy, plan_name || null, plan_start || null, plan_end || null],
+        `INSERT INTO payments (member_id, amount, paid_amount, due_amount, due_date, payment_date, payment_method, payment_for, status, months_covered, notes, received_by, plan_name, plan_start, plan_end) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [member_id, totalAmt, paidAmt, dueAmt, finalDueDate, payment_date, payment_method || "cash", payment_for || "monthly", finalStatus, parseInt(months_covered) || 1, notes || null, receivedBy, plan_name || null, plan_start || null, plan_end || null],
         (err, result) => {
             if (err) { console.error("ADD PAYMENT ERROR:", err.message); return res.status(500).json({ success: false, message: "DB Error: " + err.message }); }
 
@@ -300,7 +302,7 @@ router.post("/", verifyToken, (req, res) => {
 
 // ── UPDATE PAYMENT ────────────────────────────────────────────────────────────
 router.put("/:id", verifyToken, (req, res) => {
-    const { member_id, amount, paid_amount, payment_date, payment_method, payment_for, status, months_covered, notes, plan_name, plan_start, plan_end } = req.body;
+    const { member_id, amount, paid_amount, payment_date, payment_method, payment_for, status, months_covered, notes, plan_name, plan_start, plan_end, due_date } = req.body;
 
     const totalAmt    = parseFloat(amount);
     if (isNaN(totalAmt) || totalAmt <= 0) return res.status(400).json({ success: false, message: "Amount must be positive" });
@@ -308,10 +310,11 @@ router.put("/:id", verifyToken, (req, res) => {
     const paidAmt     = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
     const dueAmt      = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
     const finalStatus = dueAmt > 0 ? "pending" : (status || "paid");
+    const finalDueDate = (dueAmt > 0 && due_date) ? due_date : null;
 
     db.query(
-        `UPDATE payments SET member_id=?, amount=?, paid_amount=?, due_amount=?, payment_date=?, payment_method=?, payment_for=?, status=?, months_covered=?, notes=?, plan_name=?, plan_start=?, plan_end=? WHERE id=?`,
-        [member_id, totalAmt, paidAmt, dueAmt, payment_date, payment_method, payment_for, finalStatus, parseInt(months_covered) || 1, notes || null, plan_name || null, plan_start || null, plan_end || null, req.params.id],
+        `UPDATE payments SET member_id=?, amount=?, paid_amount=?, due_amount=?, due_date=?, payment_date=?, payment_method=?, payment_for=?, status=?, months_covered=?, notes=?, plan_name=?, plan_start=?, plan_end=? WHERE id=?`,
+        [member_id, totalAmt, paidAmt, dueAmt, finalDueDate, payment_date, payment_method, payment_for, finalStatus, parseInt(months_covered) || 1, notes || null, plan_name || null, plan_start || null, plan_end || null, req.params.id],
         (err, result) => {
             if (err) return res.status(500).json({ success: false, message: "DB Error: " + err.message });
             if (!result.affectedRows) return res.status(404).json({ success: false, message: "Payment not found" });

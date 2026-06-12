@@ -117,13 +117,75 @@ const checkMembershipExpiry = async () => {
 const checkPendingPayments = async () => {
   console.log("🔍 Checking pending payments...");
 
-  // Payments pending for more than 3 days
+  // ── 2a. Payments with a due_date set and due_date <= today (overdue) ─────────
+  const [overdueByDate] = await db.query(`
+    SELECT p.id, p.amount, p.payment_date, p.due_amount, p.due_date,
+           m.id AS member_id, m.full_name, m.phone
+    FROM payments p
+    JOIN members m ON p.member_id = m.id
+    WHERE p.status = 'pending'
+      AND p.due_date IS NOT NULL
+      AND p.due_date < CURDATE()
+  `);
+
+  for (const p of overdueByDate) {
+    const amount    = p.due_amount > 0 ? p.due_amount : p.amount;
+    const dueDateFmt = fmtDate(p.due_date);
+    const label     = `Overdue balance — ${p.full_name} ₹${amount} (promised ${dueDateFmt})`;
+
+    await sendBoth(
+      p.phone,
+      t.paymentOverdueSMS(p.full_name, amount, dueDateFmt),
+      t.paymentOverdueWA(p.full_name, amount, dueDateFmt),
+      label
+    );
+
+    // Create overdue notification in DB
+    await db.query(
+      `INSERT INTO notifications (type, title, message, ref_id, ref_type, is_read)
+       VALUES (?, ?, ?, ?, ?, 0)`,
+      [
+        "payment_overdue",
+        `Balance Due Overdue — ${p.full_name}`,
+        `${p.full_name} ne ₹${Number(amount).toLocaleString("en-IN")} due date ${dueDateFmt} tak nahi bhara. Balance pending hai.`,
+        p.member_id,
+        "member"
+      ]
+    ).catch(() => {});
+  }
+
+  // ── 2b. Payments with due_date set and due_date = tomorrow (reminder day before) ─
+  const [dueTomorrow] = await db.query(`
+    SELECT p.id, p.amount, p.payment_date, p.due_amount, p.due_date,
+           m.full_name, m.phone
+    FROM payments p
+    JOIN members m ON p.member_id = m.id
+    WHERE p.status = 'pending'
+      AND p.due_date IS NOT NULL
+      AND p.due_date = DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+  `);
+
+  for (const p of dueTomorrow) {
+    const amount    = p.due_amount > 0 ? p.due_amount : p.amount;
+    const dueDateFmt = fmtDate(p.due_date);
+    const label     = `Due tomorrow reminder — ${p.full_name} ₹${amount}`;
+
+    await sendBoth(
+      p.phone,
+      t.paymentDueSMS(p.full_name, amount, dueDateFmt),
+      t.paymentDueWA(p.full_name, amount, dueDateFmt),
+      label
+    );
+  }
+
+  // ── 2c. Old-style fallback: no due_date, pending for 3+ days ─────────────────
   const [pending] = await db.query(`
     SELECT p.id, p.amount, p.payment_date, p.due_amount,
            m.full_name, m.phone
     FROM payments p
     JOIN members m ON p.member_id = m.id
     WHERE p.status = 'pending'
+      AND p.due_date IS NULL
       AND DATEDIFF(CURDATE(), p.payment_date) >= 3
   `);
 
@@ -150,7 +212,7 @@ const checkPendingPayments = async () => {
     ).catch(() => {});
   }
 
-  console.log(`✅ Payment check done | Pending: ${pending.length}`);
+  console.log(`✅ Payment check done | Overdue (with date): ${overdueByDate.length} | Due tomorrow: ${dueTomorrow.length} | Old-style pending: ${pending.length}`);
 };
 
 // ─── Start Cron Job ───────────────────────────────────────────────────────────

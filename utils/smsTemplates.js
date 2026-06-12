@@ -42,6 +42,14 @@ const templates = {
 
   welcomeWA: (name, membershipType, startDate, endDate) =>
     `🏋️ *Welcome to ${GYM_NAME}!* 🎉\n\nHi *${name}*, your membership has been activated!\n\n📋 Plan: *${membershipType}*\n📅 Start: *${startDate}*\n📅 Valid till: *${endDate}*\n\nWe are thrilled to have you with us. Let us help you achieve your fitness goals! 💪🔥\n\n_See you at the gym!_ 🙌`,
+
+  // ── 6. Balance Overdue (promise-to-pay date crossed) ─────────────────────
+  paymentOverdueSMS: (name, amount, dueDate) =>
+    `Hi ${name}, your ${GYM_NAME} balance of Rs.${amount} was due on ${dueDate} but is still unpaid. Please clear it today. -${GYM_NAME}`,
+
+  paymentOverdueWA: (name, amount, dueDate) =>
+    `🏋️ *${GYM_NAME}*\n\nHi *${name}*,\n\nYour balance payment of *₹${amount}* was promised by *${dueDate}*, but it is still pending. ⚠️\n\nPlease pay at the earliest to avoid suspension of your membership.\n\n_Thank you for your cooperation!_ 🙏`,
+
 };
 
 module.exports = templates;
