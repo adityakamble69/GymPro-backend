@@ -4,38 +4,107 @@ const db      = require("../config/db");
 const { verifyToken } = require("../middleware/authMiddleware");
 
 // ── REVENUE REPORT ────────────────────────────────────────────────────────────
+// PERF NOTE: pehle 4 queries chal rahi thi —
+//   1) "yearly" -> bilkul use hi nahi hoti frontend mein, aur poori payments
+//      table ko (no WHERE) GROUP BY YEAR(payment_date) se scan karti thi.
+//   2) baaki sab "YEAR(payment_date) = ?" use kar rahi thi -> column par function
+//      lagne se index use hi nahi hota, har baar full table scan.
+// Ab: "yearly" hata diya, aur YEAR(x)=? ko date-range (>= ... AND < ...) mein
+// badal diya hai taaki payment_date par index use ho sake. "this_year" total
+// monthly rows se hi derive ho jaata hai, isliye ek query bilkul bach gayi.
+//
+// RECOMMENDED INDEX (run once on your DB):
+//   CREATE INDEX idx_payments_status_date ON payments (status, payment_date);
 router.get("/revenue", verifyToken, (req, res) => {
-    const year = req.query.year || new Date().getFullYear();
+    const year = Number(req.query.year) || new Date().getFullYear();
+
+    const yearStart     = `${year}-01-01`;
+    const yearEnd       = `${year + 1}-01-01`;
+    const lastYearStart = `${year - 1}-01-01`;
+    const lastYearEnd   = yearStart;
+
+    const now = new Date();
+    const thisMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const nextMonthDate  = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const thisMonthEnd   = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, "0")}-01`;
+
     const queries = {
-        monthly: `
-            SELECT MONTH(payment_date) AS month, SUM(amount) AS total, COUNT(*) AS count
-            FROM payments WHERE status = 'paid' AND YEAR(payment_date) = ?
-            GROUP BY MONTH(payment_date) ORDER BY month ASC`,
-        yearly: `
-            SELECT YEAR(payment_date) AS year, SUM(amount) AS total, COUNT(*) AS count
-            FROM payments WHERE status = 'paid'
-            GROUP BY YEAR(payment_date) ORDER BY year ASC`,
-        summary: `
-            SELECT
-                COALESCE(SUM(CASE WHEN YEAR(payment_date)=? AND status='paid' THEN amount END),0) AS this_year,
-                COALESCE(SUM(CASE WHEN YEAR(payment_date)=?-1 AND status='paid' THEN amount END),0) AS last_year,
-                COALESCE(SUM(CASE WHEN MONTH(payment_date)=MONTH(CURDATE()) AND YEAR(payment_date)=YEAR(CURDATE()) AND status='paid' THEN amount END),0) AS this_month,
-                COALESCE(SUM(CASE WHEN status='paid' THEN amount END),0) AS all_time,
-                COUNT(CASE WHEN status='pending' THEN 1 END) AS pending_count,
-                COALESCE(SUM(CASE WHEN status='pending' THEN amount END),0) AS pending_amount
-            FROM payments`,
-        byMethod: `
-            SELECT payment_method, COUNT(*) AS count, SUM(amount) AS total
-            FROM payments WHERE status='paid' AND YEAR(payment_date)=?
-            GROUP BY payment_method`,
+        monthly: {
+            sql: `
+                SELECT MONTH(payment_date) AS month, SUM(amount) AS total, COUNT(*) AS count
+                FROM payments
+                WHERE status = 'paid' AND payment_date >= ? AND payment_date < ?
+                GROUP BY MONTH(payment_date) ORDER BY month ASC`,
+            params: [yearStart, yearEnd],
+        },
+        byMethod: {
+            sql: `
+                SELECT payment_method, COUNT(*) AS count, SUM(amount) AS total
+                FROM payments
+                WHERE status = 'paid' AND payment_date >= ? AND payment_date < ?
+                GROUP BY payment_method`,
+            params: [yearStart, yearEnd],
+        },
+        lastYear: {
+            sql: `
+                SELECT COALESCE(SUM(amount),0) AS total
+                FROM payments
+                WHERE status = 'paid' AND payment_date >= ? AND payment_date < ?`,
+            params: [lastYearStart, lastYearEnd],
+        },
+        thisMonth: {
+            sql: `
+                SELECT COALESCE(SUM(amount),0) AS total
+                FROM payments
+                WHERE status = 'paid' AND payment_date >= ? AND payment_date < ?`,
+            params: [thisMonthStart, thisMonthEnd],
+        },
+        allTimeAndPending: {
+            sql: `
+                SELECT
+                    COALESCE(SUM(CASE WHEN status='paid' THEN amount END),0)    AS all_time,
+                    COUNT(CASE WHEN status='pending' THEN 1 END)                AS pending_count,
+                    COALESCE(SUM(CASE WHEN status='pending' THEN amount END),0) AS pending_amount
+                FROM payments`,
+            params: [],
+        },
     };
+
     const results = {};
-    let pending = Object.keys(queries).length;
-    const done = () => { if (--pending === 0) res.json({ success: true, data: results }); };
-    db.query(queries.monthly,  [year],       (err, rows) => { if (!err) results.monthly  = rows; done(); });
-    db.query(queries.yearly,   [],           (err, rows) => { if (!err) results.yearly   = rows; done(); });
-    db.query(queries.summary,  [year, year], (err, rows) => { if (!err) results.summary  = rows[0]; done(); });
-    db.query(queries.byMethod, [year],       (err, rows) => { if (!err) results.byMethod = rows; done(); });
+    const keys = Object.keys(queries);
+    let pending = keys.length;
+
+    const done = () => {
+        if (--pending !== 0) return;
+
+        const monthly = results.monthly || [];
+        const thisYearTotal = monthly.reduce((s, r) => s + Number(r.total), 0);
+
+        res.json({
+            success: true,
+            data: {
+                monthly,
+                byMethod: results.byMethod || [],
+                summary: {
+                    this_year: thisYearTotal,
+                    last_year: Number(results.lastYear?.[0]?.total || 0),
+                    this_month: Number(results.thisMonth?.[0]?.total || 0),
+                    all_time: Number(results.allTimeAndPending?.[0]?.all_time || 0),
+                    pending_count: Number(results.allTimeAndPending?.[0]?.pending_count || 0),
+                    pending_amount: Number(results.allTimeAndPending?.[0]?.pending_amount || 0),
+                },
+            },
+        });
+    };
+
+    keys.forEach((key) => {
+        const { sql, params } = queries[key];
+        db.query(sql, params, (err, rows) => {
+            if (err) console.error(`/reports/revenue [${key}] error:`, err.message);
+            else results[key] = rows;
+            done();
+        });
+    });
 });
 
 // ── DRILLDOWN: Year → Months (for Last Year / All Time year click) ────────────
