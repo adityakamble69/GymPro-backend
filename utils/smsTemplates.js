@@ -1,10 +1,10 @@
 // utils/smsTemplates.js
-// ── GymPro SMS / WhatsApp Message Templates ───────────────────────────────────
+// ── Workout World Gym SMS / WhatsApp Message Templates ───────────────────────────────────
 // Keep messages under 160 chars for single-part SMS.
 // WhatsApp can be longer — use multiline versions.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GYM_NAME = process.env.GYM_NAME || "GymPro Fitness";
+const GYM_NAME = process.env.GYM_NAME || "Workout World Gym";
 
 const templates = {
 

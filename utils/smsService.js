@@ -1,5 +1,5 @@
 // utils/smsService.js
-// ── GymPro SMS + WhatsApp — Twilio only ───────────────────────────────────────
+// ── Workout World Gym SMS + WhatsApp — Twilio only ───────────────────────────────────────
 
 const twilio = require("twilio");
 

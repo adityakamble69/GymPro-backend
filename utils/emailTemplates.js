@@ -1,4 +1,4 @@
-const FROM = `"${process.env.EMAIL_FROM_NAME || "GymPro"}" <${process.env.EMAIL_USER}>`;
+const FROM = `"${process.env.EMAIL_FROM_NAME || "Workout World Gym"}" <${process.env.EMAIL_USER}>`;
 
 const fmtDate = (d) => d
   ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })
@@ -10,7 +10,7 @@ const fmtAmount = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
 const header = `
   <div style="background:#111;padding:28px 40px;text-align:center">
     <h1 style="color:#fff;margin:0;font-size:26px;letter-spacing:3px;font-family:Arial,sans-serif">
-      ⚡ GYMP<span style="color:#666">RO</span>
+      ⚡ WORKOUT <span style="color:#666">WORLD</span> GYM
     </h1>
     <p style="color:#666;margin:5px 0 0;font-size:12px;letter-spacing:1px">GYM MANAGEMENT SYSTEM</p>
   </div>`;
@@ -18,7 +18,7 @@ const header = `
 const footer = `
   <div style="background:#f5f5f5;padding:20px 40px;text-align:center;border-top:1px solid #e0e0e0">
     <p style="color:#aaa;font-size:12px;margin:0;font-family:Arial,sans-serif">
-      © ${new Date().getFullYear()} GymPro · All rights reserved
+      © ${new Date().getFullYear()} Workout World Gym · All rights reserved
     </p>
   </div>`;
 
@@ -39,7 +39,7 @@ const tableRow = (label, value, highlight = false) => `
 const welcomeEmail = (member) => ({
   from: FROM,
   to: member.email,
-  subject: `🎉 Welcome to GymPro, ${member.full_name}! Your Membership is Active`,
+  subject: `🎉 Welcome to Workout World Gym, ${member.full_name}! Your Membership is Active`,
   html: wrap(`
     <div style="background:#d1fae5;padding:16px 40px;border-left:4px solid #10b981;text-align:center">
       <p style="color:#065f46;font-weight:700;margin:0;font-size:15px">🎉 Membership Successfully Activated!</p>
@@ -48,7 +48,7 @@ const welcomeEmail = (member) => ({
     <div style="padding:36px 40px">
       <h2 style="color:#111;margin:0 0 10px;font-size:22px">Welcome, ${member.full_name}! 💪</h2>
       <p style="color:#555;font-size:14px;line-height:1.7;margin:0 0 24px">
-        Your membership has been successfully activated at GymPro. We're thrilled to have you as part of our fitness family!
+        Your membership has been successfully activated at Workout World Gym. We're thrilled to have you as part of our fitness family!
       </p>
 
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:20px 24px;margin-bottom:24px">
@@ -81,7 +81,7 @@ const welcomeEmail = (member) => ({
 const expiryWarningEmail = (member, daysLeft) => ({
   from: FROM,
   to: member.email,
-  subject: `⚠️ Membership Expiring in ${daysLeft} Day${daysLeft !== 1 ? "s" : ""} — GymPro`,
+  subject: `⚠️ Membership Expiring in ${daysLeft} Day${daysLeft !== 1 ? "s" : ""} — Workout World Gym`,
   html: wrap(`
     <div style="background:#fef3c7;padding:16px 40px;border-left:4px solid #f59e0b;text-align:center">
       <p style="color:#92400e;font-weight:700;margin:0;font-size:15px">
@@ -92,7 +92,7 @@ const expiryWarningEmail = (member, daysLeft) => ({
     <div style="padding:36px 40px">
       <h2 style="color:#111;margin:0 0 10px;font-size:22px">Hi ${member.full_name},</h2>
       <p style="color:#555;font-size:14px;line-height:1.7;margin:0 0 24px">
-        Your GymPro membership is expiring soon. Renew now to ensure uninterrupted access to all gym facilities and continue your fitness journey!
+        Your Workout World Gym membership is expiring soon. Renew now to ensure uninterrupted access to all gym facilities and continue your fitness journey!
       </p>
 
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:20px 24px;margin-bottom:28px">
@@ -123,7 +123,7 @@ const paymentReceiptEmail = (member, payment) => {
   return {
     from: FROM,
     to: member.email,
-    subject: `✅ Payment Receipt — ${fmtAmount(payment.amount)} | GymPro #PAY-${String(payment.id).padStart(5, "0")}`,
+    subject: `✅ Payment Receipt — ${fmtAmount(payment.amount)} | Workout World Gym #PAY-${String(payment.id).padStart(5, "0")}`,
     html: wrap(`
       <div style="background:${isDue ? "#fef3c7" : "#d1fae5"};padding:16px 40px;text-align:center;border-left:4px solid ${isDue ? "#f59e0b" : "#10b981"}">
         <p style="color:${isDue ? "#92400e" : "#065f46"};font-weight:700;margin:0;font-size:15px">
@@ -166,7 +166,7 @@ const paymentReceiptEmail = (member, payment) => {
           <p style="color:#555;font-size:13px;margin:0;font-style:italic">${payment.notes}</p>
         </div>` : ""}
 
-        <p style="color:#888;font-size:13px;">Thank you for choosing GymPro. See you at the gym! 🏋️</p>
+        <p style="color:#888;font-size:13px;">Thank you for choosing Workout World Gym. See you at the gym! 🏋️</p>
       </div>
     `)
   };
@@ -176,7 +176,7 @@ const paymentReceiptEmail = (member, payment) => {
 const inquiryAlertEmail = (inquiry) => ({
   from: FROM,
   to: process.env.ADMIN_EMAIL,
-  subject: `📩 New Inquiry: ${inquiry.full_name} — GymPro Admin Alert`,
+  subject: `📩 New Inquiry: ${inquiry.full_name} — Workout World Gym Admin Alert`,
   html: wrap(`
     <div style="background:#ede9fe;padding:16px 40px;border-left:4px solid #7c3aed">
       <p style="color:#4c1d95;font-weight:700;margin:0;font-size:15px">
@@ -187,7 +187,7 @@ const inquiryAlertEmail = (inquiry) => ({
     <div style="padding:36px 40px">
       <h2 style="color:#111;margin:0 0 10px;font-size:22px">New Inquiry Alert</h2>
       <p style="color:#555;font-size:14px;line-height:1.7;margin:0 0 24px">
-        A potential member has submitted an inquiry through the GymPro inquiry form. Please review and follow up at the earliest.
+        A potential member has submitted an inquiry through the Workout World Gym inquiry form. Please review and follow up at the earliest.
       </p>
 
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:20px 24px;margin-bottom:24px">
@@ -210,7 +210,7 @@ const inquiryAlertEmail = (inquiry) => ({
 
       <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px 18px">
         <p style="color:#92400e;font-size:13px;margin:0">
-          ⚡ <strong>Action Required:</strong> Login to GymPro admin panel → Inquiries section to update the status and add notes.
+          ⚡ <strong>Action Required:</strong> Login to Workout World Gym admin panel → Inquiries section to update the status and add notes.
         </p>
       </div>
     </div>

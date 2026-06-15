@@ -1,5 +1,5 @@
 // utils/smsHooks.js
-// ── GymPro SMS Hooks — called from routes ────────────────────────────────────
+// ── Workout World Gym SMS Hooks — called from routes ────────────────────────────────────
 // These are event-based triggers (not cron):
 //   • onMemberAdded     → welcome SMS + WhatsApp
 //   • onPaymentRecorded → receipt SMS + WhatsApp

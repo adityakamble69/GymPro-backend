@@ -1,5 +1,5 @@
 // utils/reminderCron.js
-// ── GymPro Daily Reminder Cron Job ────────────────────────────────────────────
+// ── Workout World Gym Daily Reminder Cron Job ────────────────────────────────────────────
 // Runs every day at 9:00 AM IST
 // Checks:
 //   1. Members expiring in 7 days  → SMS + WhatsApp warning
