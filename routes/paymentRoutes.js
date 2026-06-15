@@ -3,13 +3,23 @@ const router    = express.Router();
 const db        = require("../config/db");
 const { verifyToken, requireRole } = require("../middleware/authMiddleware");
 
-let sendEmail, paymentReceiptEmail;
+let sendEmail, paymentReceiptEmail, welcomeEmail;
 try {
   sendEmail           = require("../utils/sendEmail");
-  paymentReceiptEmail = require("../utils/emailTemplates").paymentReceiptEmail;
+  const templates     = require("../utils/emailTemplates");
+  paymentReceiptEmail = templates.paymentReceiptEmail;
+  welcomeEmail        = templates.welcomeEmail;
 } catch (e) {
   sendEmail           = async () => ({ success: false });
   paymentReceiptEmail = () => ({});
+  welcomeEmail        = () => ({});
+}
+
+let onPaymentRecorded;
+try {
+  onPaymentRecorded = require("../utils/smsHooks").onPaymentRecorded;
+} catch (e) {
+  onPaymentRecorded = async () => {};
 }
 
 function autoSavePlanHistory({ member_id, payment_id, plan_name, plan_start, plan_end, amount_paid, notes, admin_id }) {
@@ -98,24 +108,15 @@ router.get("/drilldown/years", verifyToken, (req, res) => {
 });
 
 // ── DRILL DOWN: Months of a year ─────────────────────────────────────────────
-// FIX: DATE_FORMAT removed — causes Error 1055 in MySQL strict mode
-// month_name now derived in JS
 router.get("/drilldown/months/:year", verifyToken, (req, res) => {
     const MONTH_NAMES = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     db.query(
-        `SELECT MONTH(payment_date) AS month,
-                COALESCE(SUM(amount),0) AS total,
-                COUNT(*) AS count
-         FROM payments
-         WHERE status='paid' AND YEAR(payment_date)=?
-         GROUP BY MONTH(payment_date)
-         ORDER BY month ASC`,
+        `SELECT MONTH(payment_date) AS month, COALESCE(SUM(amount),0) AS total, COUNT(*) AS count
+         FROM payments WHERE status='paid' AND YEAR(payment_date)=?
+         GROUP BY MONTH(payment_date) ORDER BY month ASC`,
         [req.params.year],
         (err, rows) => {
-            if (err) {
-                console.error("DRILLDOWN MONTHS ERROR:", err.message);
-                return res.status(500).json({ success: false, message: "DB Error: " + err.message });
-            }
+            if (err) return res.status(500).json({ success: false, message: "DB Error: " + err.message });
             const data = rows.map(r => ({ ...r, month_name: MONTH_NAMES[r.month] || String(r.month) }));
             res.json({ success: true, data });
         }
@@ -195,7 +196,7 @@ router.get("/due/list", verifyToken, (req, res) => {
     );
 });
 
-// ── CHART MONTH DETAIL: member+plan+pending for a chart bar ──────────────────
+// ── CHART MONTH DETAIL ────────────────────────────────────────────────────────
 router.get("/chart-month/:year/:month", verifyToken, (req, res) => {
     db.query(
         `SELECT p.id, p.amount, p.paid_amount, p.due_amount, p.status,
@@ -224,9 +225,8 @@ router.get("/member/:memberId", verifyToken, (req, res) => {
     );
 });
 
-// ── GET MEMBER PLAN HISTORY (from member_plan_history table) ──────────────────
+// ── GET MEMBER PLAN HISTORY ───────────────────────────────────────────────────
 router.get("/member/:memberId/plan-history", verifyToken, (req, res) => {
-    // Try member_plan_history table first; fallback to building from payments
     db.query(
         `SELECT mph.*, p.payment_method
          FROM member_plan_history mph
@@ -236,7 +236,6 @@ router.get("/member/:memberId/plan-history", verifyToken, (req, res) => {
         [req.params.memberId],
         (err, rows) => {
             if (err || rows.length === 0) {
-                // Fallback: derive from payments table
                 db.query(
                     `SELECT id, plan_name, plan_start, plan_end,
                             paid_amount AS amount_paid, payment_date, payment_method, notes
@@ -263,39 +262,71 @@ router.post("/", verifyToken, (req, res) => {
     if (!member_id || !amount || !payment_date)
         return res.status(400).json({ success: false, message: "member_id, amount and payment_date are required" });
 
-    const totalAmt    = parseFloat(amount);
+    const totalAmt = parseFloat(amount);
     if (isNaN(totalAmt) || totalAmt <= 0) return res.status(400).json({ success: false, message: "Amount must be positive" });
 
-    const paidAmt     = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
-    const dueAmt      = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
-    const finalStatus = dueAmt > 0 ? "pending" : (status || "paid");
-    const receivedBy  = req.admin?.id ?? null;
-    // due_date: only save when balance is due
+    const paidAmt      = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
+    const dueAmt       = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
+    const finalStatus  = dueAmt > 0 ? "pending" : (status || "paid");
+    const receivedBy   = req.admin?.id ?? null;
     const finalDueDate = (dueAmt > 0 && due_date) ? due_date : null;
 
     db.query(
-        `INSERT INTO payments (member_id, amount, paid_amount, due_amount, due_date, payment_date, payment_method, payment_for, status, months_covered, notes, received_by, plan_name, plan_start, plan_end) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO payments (member_id, amount, paid_amount, due_amount, due_date, payment_date, payment_method, payment_for, status, months_covered, notes, received_by, plan_name, plan_start, plan_end)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [member_id, totalAmt, paidAmt, dueAmt, finalDueDate, payment_date, payment_method || "cash", payment_for || "monthly", finalStatus, parseInt(months_covered) || 1, notes || null, receivedBy, plan_name || null, plan_start || null, plan_end || null],
         (err, result) => {
             if (err) { console.error("ADD PAYMENT ERROR:", err.message); return res.status(500).json({ success: false, message: "DB Error: " + err.message }); }
 
             const paymentId = result.insertId;
 
+            // Auto save plan history
             if (plan_name && plan_start) {
                 autoSavePlanHistory({ member_id, payment_id: paymentId, plan_name, plan_start, plan_end, amount_paid: paidAmt, notes, admin_id: receivedBy });
             } else if (payment_for && !["other","registration","monthly"].includes(payment_for)) {
                 autoSavePlanHistory({ member_id, payment_id: paymentId, plan_name: payment_for, plan_start: payment_date, plan_end: null, amount_paid: paidAmt, notes, admin_id: receivedBy });
             }
 
+            // ── Fetch member → send SMS + WhatsApp + Email ────────────────────
             db.query("SELECT * FROM members WHERE id = ?", [member_id], (e, rows) => {
-                if (!e && rows.length && rows[0].email) {
-                    const member = rows[0];
-                    const payment = { id: paymentId, amount: totalAmt, paid_amount: paidAmt, due_amount: dueAmt, payment_date, payment_method: payment_method || "cash", payment_for: payment_for || "monthly", months_covered: parseInt(months_covered) || 1, plan_name: plan_name || null, notes: notes || null };
+                if (e || !rows.length) return;
+                const member  = rows[0];
+                const payment = {
+                    id: paymentId, amount: totalAmt, paid_amount: paidAmt,
+                    due_amount: dueAmt, payment_date,
+                    payment_method: payment_method || "cash",
+                    payment_for: payment_for || "monthly",
+                    months_covered: parseInt(months_covered) || 1,
+                    plan_name: plan_name || null, notes: notes || null
+                };
+
+                // SMS + WhatsApp (non-blocking)
+                onPaymentRecorded(payment, member.phone, member.full_name).catch(() => {});
+
+                // Email receipt (non-blocking)
+                if (member.email) {
                     sendEmail(paymentReceiptEmail(member, payment)).catch(() => {});
+                }
+
+                // ── Renewal detection: plan renewed → welcome-style email ──────
+                // Agar plan_end set hai (matlab naya plan assign hua) aur fully paid
+                if (plan_end && dueAmt === 0 && member.email) {
+                    const renewalMail = welcomeEmail({
+                        ...member,
+                        membership_type:  plan_name  || member.membership_type,
+                        membership_start: plan_start || payment_date,
+                        membership_end:   plan_end,
+                    });
+                    renewalMail.subject = `✅ Membership Renewed — Welcome Back, ${member.full_name}! | Workout World Gym`;
+                    sendEmail(renewalMail).catch(() => {});
                 }
             });
 
-            res.status(201).json({ success: true, message: dueAmt > 0 ? `Partial payment. Due: ₹${dueAmt}` : "Payment recorded", id: paymentId, paid_amount: paidAmt, due_amount: dueAmt, status: finalStatus });
+            res.status(201).json({
+                success: true,
+                message: dueAmt > 0 ? `Partial payment. Due: ₹${dueAmt}` : "Payment recorded",
+                id: paymentId, paid_amount: paidAmt, due_amount: dueAmt, status: finalStatus
+            });
         }
     );
 });
@@ -304,12 +335,12 @@ router.post("/", verifyToken, (req, res) => {
 router.put("/:id", verifyToken, (req, res) => {
     const { member_id, amount, paid_amount, payment_date, payment_method, payment_for, status, months_covered, notes, plan_name, plan_start, plan_end, due_date } = req.body;
 
-    const totalAmt    = parseFloat(amount);
+    const totalAmt     = parseFloat(amount);
     if (isNaN(totalAmt) || totalAmt <= 0) return res.status(400).json({ success: false, message: "Amount must be positive" });
 
-    const paidAmt     = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
-    const dueAmt      = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
-    const finalStatus = dueAmt > 0 ? "pending" : (status || "paid");
+    const paidAmt      = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
+    const dueAmt       = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
+    const finalStatus  = dueAmt > 0 ? "pending" : (status || "paid");
     const finalDueDate = (dueAmt > 0 && due_date) ? due_date : null;
 
     db.query(

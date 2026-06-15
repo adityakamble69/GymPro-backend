@@ -1,28 +1,28 @@
 // utils/reminderCron.js
-// ── Workout World Gym Daily Reminder Cron Job ────────────────────────────────────────────
+// ── Workout World Gym Daily Reminder Cron Job ─────────────────────────────────
 // Runs every day at 9:00 AM IST
 // Checks:
-//   1. Members expiring in 7 days  → SMS + WhatsApp warning
-//   2. Members expiring in 3 days  → SMS + WhatsApp urgent warning
-//   3. Members expired today       → SMS + WhatsApp expired notice
-//   4. Pending payments (due date) → SMS + WhatsApp payment reminder
+//   1. Members expiring in 7/3/1 days → SMS + WhatsApp + Email warning
+//   2. Members expired today          → SMS + WhatsApp + Email expired notice
+//   3. Pending payments (overdue)     → SMS + WhatsApp + Email payment reminder
+//   4. Due tomorrow                   → SMS + WhatsApp + Email reminder
 // ─────────────────────────────────────────────────────────────────────────────
 
 const cron       = require("node-cron");
 const db         = require("../config/db");
 const { sendSMS, sendWhatsApp } = require("./smsService");
 const t          = require("./smsTemplates");
-const { sendEmailNotification } = require("./sendEmail");   // your existing email util
+const sendEmail  = require("./sendEmail");
+const { expiryWarningEmail, paymentReceiptEmail } = require("./emailTemplates");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmtDate = (d) =>
   new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
-// Clean phone: remove spaces, dashes, +91 prefix for Fast2SMS
 const cleanPhone = (p) =>
   String(p || "").replace(/[\s\-]/g, "").replace(/^\+91/, "").trim();
 
-// ─── Core reminder sender ─────────────────────────────────────────────────────
+// ─── Core: SMS + WhatsApp sender ──────────────────────────────────────────────
 const sendBoth = async (phone, smsMsg, waMsg, label) => {
   const num = cleanPhone(phone);
   if (!num || num.length < 10) {
@@ -41,13 +41,24 @@ const sendBoth = async (phone, smsMsg, waMsg, label) => {
   console.log(`📲 ${label} | SMS: ${smsOk ? "✅" : "❌"} | WA: ${waOk ? "✅" : "❌"}`);
 };
 
+// ─── Core: Email sender (non-blocking, won't crash cron) ──────────────────────
+const sendMailSafe = async (mailOptions, label) => {
+  if (!mailOptions || !mailOptions.to) return;
+  try {
+    const r = await sendEmail(mailOptions);
+    console.log(`📧 ${label} | Email: ${r.success ? "✅" : "❌ " + r.error}`);
+  } catch (e) {
+    console.error(`📧 ${label} | Email crash: ${e.message}`);
+  }
+};
+
 // ─── 1. Membership Expiry Reminders ──────────────────────────────────────────
 const checkMembershipExpiry = async () => {
   console.log("🔍 Checking membership expiries...");
 
-  // Members expiring in 7 or 3 days
+  // ── 1a. Members expiring in 7, 3, or 1 day ───────────────────────────────
   const [expiringSoon] = await db.query(`
-    SELECT id, full_name, phone, membership_end, membership_type
+    SELECT id, full_name, phone, email, membership_end, membership_type
     FROM members
     WHERE status = 'active'
       AND membership_end IS NOT NULL
@@ -59,6 +70,7 @@ const checkMembershipExpiry = async () => {
     const expiryStr = fmtDate(m.membership_end);
     const label     = `Expiry warning — ${m.full_name} (${daysLeft}d)`;
 
+    // SMS + WhatsApp
     await sendBoth(
       m.phone,
       t.membershipExpiringSMS(m.full_name, daysLeft, expiryStr),
@@ -66,10 +78,14 @@ const checkMembershipExpiry = async () => {
       label
     );
 
-    // Also create a DB notification
+    // Email (agar email hai toh)
+    if (m.email) {
+      await sendMailSafe(expiryWarningEmail(m, daysLeft), label);
+    }
+
+    // DB notification
     await db.query(
-      `INSERT INTO notifications (type, title, message, is_read)
-       VALUES (?, ?, ?, 0)`,
+      `INSERT INTO notifications (type, title, message, is_read) VALUES (?, ?, ?, 0)`,
       [
         "membership_expiring",
         `Membership Expiring — ${m.full_name}`,
@@ -78,9 +94,9 @@ const checkMembershipExpiry = async () => {
     ).catch(() => {});
   }
 
-  // Members whose membership expired TODAY
+  // ── 1b. Members whose membership expired TODAY ────────────────────────────
   const [expiredToday] = await db.query(`
-    SELECT id, full_name, phone, membership_end
+    SELECT id, full_name, phone, email, membership_end
     FROM members
     WHERE DATE(membership_end) = CURDATE()
       AND status = 'active'
@@ -89,9 +105,10 @@ const checkMembershipExpiry = async () => {
   for (const m of expiredToday) {
     const expiryStr = fmtDate(m.membership_end);
 
-    // Update status → expired
+    // Status update → expired
     await db.query(`UPDATE members SET status = 'expired' WHERE id = ?`, [m.id]).catch(() => {});
 
+    // SMS + WhatsApp
     await sendBoth(
       m.phone,
       t.membershipExpiredSMS(m.full_name, expiryStr),
@@ -99,9 +116,13 @@ const checkMembershipExpiry = async () => {
       `Expired today — ${m.full_name}`
     );
 
+    // Email — expired notice (0 days left)
+    if (m.email) {
+      await sendMailSafe(expiryWarningEmail(m, 0), `Expired today — ${m.full_name}`);
+    }
+
     await db.query(
-      `INSERT INTO notifications (type, title, message, is_read)
-       VALUES (?, ?, ?, 0)`,
+      `INSERT INTO notifications (type, title, message, is_read) VALUES (?, ?, ?, 0)`,
       [
         "membership_expired",
         `Membership Expired — ${m.full_name}`,
@@ -117,10 +138,11 @@ const checkMembershipExpiry = async () => {
 const checkPendingPayments = async () => {
   console.log("🔍 Checking pending payments...");
 
-  // ── 2a. Payments with a due_date set and due_date <= today (overdue) ─────────
+  // ── 2a. Overdue: due_date set aur aaj se pehle guzar gaya ────────────────
   const [overdueByDate] = await db.query(`
     SELECT p.id, p.amount, p.payment_date, p.due_amount, p.due_date,
-           m.id AS member_id, m.full_name, m.phone
+           p.payment_method, p.payment_for, p.months_covered, p.plan_name, p.notes,
+           m.id AS member_id, m.full_name, m.phone, m.email
     FROM payments p
     JOIN members m ON p.member_id = m.id
     WHERE p.status = 'pending'
@@ -129,9 +151,9 @@ const checkPendingPayments = async () => {
   `);
 
   for (const p of overdueByDate) {
-    const amount    = p.due_amount > 0 ? p.due_amount : p.amount;
+    const amount     = p.due_amount > 0 ? p.due_amount : p.amount;
     const dueDateFmt = fmtDate(p.due_date);
-    const label     = `Overdue balance — ${p.full_name} ₹${amount} (promised ${dueDateFmt})`;
+    const label      = `Overdue balance — ${p.full_name} ₹${amount}`;
 
     await sendBoth(
       p.phone,
@@ -140,24 +162,35 @@ const checkPendingPayments = async () => {
       label
     );
 
-    // Create overdue notification in DB
+    if (p.email) {
+      const memberObj  = { full_name: p.full_name, email: p.email, phone: p.phone };
+      const paymentObj = {
+        id: p.id, amount: p.amount, paid_amount: p.amount - amount,
+        due_amount: amount, payment_date: p.payment_date,
+        payment_method: p.payment_method || "cash",
+        payment_for: p.payment_for || "monthly",
+        months_covered: p.months_covered || 1,
+        plan_name: p.plan_name, notes: p.notes
+      };
+      await sendMailSafe(paymentReceiptEmail(memberObj, paymentObj), label);
+    }
+
     await db.query(
-      `INSERT INTO notifications (type, title, message, ref_id, ref_type, is_read)
-       VALUES (?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO notifications (type, title, message, ref_id, ref_type, is_read) VALUES (?, ?, ?, ?, ?, 0)`,
       [
         "payment_overdue",
         `Balance Due Overdue — ${p.full_name}`,
-        `${p.full_name} ne ₹${Number(amount).toLocaleString("en-IN")} due date ${dueDateFmt} tak nahi bhara. Balance pending hai.`,
-        p.member_id,
-        "member"
+        `${p.full_name} ne ₹${Number(amount).toLocaleString("en-IN")} due date ${dueDateFmt} tak nahi bhara.`,
+        p.member_id, "member"
       ]
     ).catch(() => {});
   }
 
-  // ── 2b. Payments with due_date set and due_date = tomorrow (reminder day before) ─
+  // ── 2b. Due tomorrow: aaj se kal due hai — ek din pehle reminder ─────────
   const [dueTomorrow] = await db.query(`
     SELECT p.id, p.amount, p.payment_date, p.due_amount, p.due_date,
-           m.full_name, m.phone
+           p.payment_method, p.payment_for, p.months_covered, p.plan_name, p.notes,
+           m.full_name, m.phone, m.email
     FROM payments p
     JOIN members m ON p.member_id = m.id
     WHERE p.status = 'pending'
@@ -166,9 +199,9 @@ const checkPendingPayments = async () => {
   `);
 
   for (const p of dueTomorrow) {
-    const amount    = p.due_amount > 0 ? p.due_amount : p.amount;
+    const amount     = p.due_amount > 0 ? p.due_amount : p.amount;
     const dueDateFmt = fmtDate(p.due_date);
-    const label     = `Due tomorrow reminder — ${p.full_name} ₹${amount}`;
+    const label      = `Due tomorrow — ${p.full_name} ₹${amount}`;
 
     await sendBoth(
       p.phone,
@@ -176,12 +209,26 @@ const checkPendingPayments = async () => {
       t.paymentDueWA(p.full_name, amount, dueDateFmt),
       label
     );
+
+    if (p.email) {
+      const memberObj  = { full_name: p.full_name, email: p.email, phone: p.phone };
+      const paymentObj = {
+        id: p.id, amount: p.amount, paid_amount: p.amount - amount,
+        due_amount: amount, payment_date: p.payment_date,
+        payment_method: p.payment_method || "cash",
+        payment_for: p.payment_for || "monthly",
+        months_covered: p.months_covered || 1,
+        plan_name: p.plan_name, notes: p.notes
+      };
+      await sendMailSafe(paymentReceiptEmail(memberObj, paymentObj), label);
+    }
   }
 
-  // ── 2c. Old-style fallback: no due_date, pending for 3+ days ─────────────────
+  // ── 2c. Old-style fallback: no due_date, pending for 3+ days ─────────────
   const [pending] = await db.query(`
     SELECT p.id, p.amount, p.payment_date, p.due_amount,
-           m.full_name, m.phone
+           p.payment_method, p.payment_for, p.months_covered, p.plan_name, p.notes,
+           m.id AS member_id, m.full_name, m.phone, m.email
     FROM payments p
     JOIN members m ON p.member_id = m.id
     WHERE p.status = 'pending'
@@ -201,9 +248,21 @@ const checkPendingPayments = async () => {
       label
     );
 
+    if (p.email) {
+      const memberObj  = { full_name: p.full_name, email: p.email, phone: p.phone };
+      const paymentObj = {
+        id: p.id, amount: p.amount, paid_amount: p.amount - amount,
+        due_amount: amount, payment_date: p.payment_date,
+        payment_method: p.payment_method || "cash",
+        payment_for: p.payment_for || "monthly",
+        months_covered: p.months_covered || 1,
+        plan_name: p.plan_name, notes: p.notes
+      };
+      await sendMailSafe(paymentReceiptEmail(memberObj, paymentObj), label);
+    }
+
     await db.query(
-      `INSERT INTO notifications (type, title, message, is_read)
-       VALUES (?, ?, ?, 0)`,
+      `INSERT INTO notifications (type, title, message, is_read) VALUES (?, ?, ?, 0)`,
       [
         "payment_pending",
         `Payment Due — ${p.full_name}`,
@@ -212,7 +271,7 @@ const checkPendingPayments = async () => {
     ).catch(() => {});
   }
 
-  console.log(`✅ Payment check done | Overdue (with date): ${overdueByDate.length} | Due tomorrow: ${dueTomorrow.length} | Old-style pending: ${pending.length}`);
+  console.log(`✅ Payment check done | Overdue: ${overdueByDate.length} | Due tomorrow: ${dueTomorrow.length} | Old pending: ${pending.length}`);
 };
 
 // ─── Start Cron Job ───────────────────────────────────────────────────────────
@@ -234,7 +293,7 @@ const startReminderCron = () => {
   console.log("⏰ Reminder cron scheduled — runs daily at 9:00 AM IST");
 };
 
-// ─── Manual trigger (for testing via API) ────────────────────────────────────
+// ─── Manual trigger (testing ke liye) ────────────────────────────────────────
 const runRemindersNow = async () => {
   console.log("🔄 Manual reminder trigger...");
   await checkMembershipExpiry();

@@ -274,7 +274,7 @@ router.post("/:id/send-email", verifyToken, async (req, res) => {
         // Renewal = welcome email with updated dates
         mailOptions = welcomeEmail(member);
         // Override subject for renewal
-        mailOptions.subject = `✅ Membership Renewed — Welcome Back, ${member.full_name}! | GymPro`;
+        mailOptions.subject = `✅ Membership Renewed — Welcome Back, ${member.full_name}! | Workout World Gym`;
         label = "Renewal Confirmation";
 
       } else {
