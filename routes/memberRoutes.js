@@ -162,7 +162,9 @@ router.post("/:id/plan-history", verifyToken, (req, res) => {
 
 // ── UPDATE plan history ───────────────────────────────────────────────────────
 router.put("/:id/plan-history/:hid", verifyToken, (req, res) => {
-  const { plan_name, plan_start, plan_end, amount_paid, notes } = req.body;
+  const { plan_name, plan_start, plan_end, amount_paid, notes, payment_method } = req.body;
+
+  // 1. Update member_plan_history
   db.query(
     `UPDATE member_plan_history SET plan_name=?, plan_start=?, plan_end=?, amount_paid=?, notes=?
      WHERE id=? AND member_id=?`,
@@ -171,7 +173,32 @@ router.put("/:id/plan-history/:hid", verifyToken, (req, res) => {
     (err, result) => {
       if (err) return res.status(500).json({ success: false, message: "DB Error: " + err.message });
       if (!result.affectedRows) return res.status(404).json({ success: false, message: "Not found" });
-      res.json({ success: true, message: "Plan history updated" });
+
+      // 2. Fetch payment_id linked to this plan history row
+      db.query(
+        "SELECT payment_id FROM member_plan_history WHERE id = ?",
+        [req.params.hid],
+        (err2, rows) => {
+          if (err2 || !rows.length) return res.json({ success: true, message: "Plan history updated" });
+          const paymentId = rows[0].payment_id;
+          if (!paymentId) return res.json({ success: true, message: "Plan history updated" });
+
+          // 3. Sync linked payment record
+          const paidAmt  = parseFloat(amount_paid) || 0;
+          const dueAmt   = 0; // editing bill = assuming it's settled; adjust if needed
+          db.query(
+            `UPDATE payments
+             SET plan_name=?, plan_start=?, plan_end=?, paid_amount=?, amount=?,
+                 due_amount=?, notes=?, payment_method=COALESCE(?,payment_method)
+             WHERE id=?`,
+            [plan_name, plan_start, plan_end || null, paidAmt, paidAmt,
+             dueAmt, notes || null, payment_method || null, paymentId],
+            () => {} // non-blocking — plan_history is the source of truth here
+          );
+
+          res.json({ success: true, message: "Plan history updated" });
+        }
+      );
     }
   );
 });
