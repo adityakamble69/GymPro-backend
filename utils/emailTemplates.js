@@ -1,4 +1,4 @@
-const FROM = `"${process.env.EMAIL_FROM_NAME || "Workout World Gym"}" <${process.env.EMAIL_USER}>`;
+const FROM = `${process.env.EMAIL_FROM_NAME || "Workout World Gym"} <onboarding@resend.dev>`;
 
 const fmtDate = (d) => d
   ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" })
