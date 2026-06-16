@@ -1,11 +1,10 @@
 // utils/smsHooks.js
-// ── Workout World Gym SMS Hooks — called from routes ────────────────────────────────────
-// These are event-based triggers (not cron):
-//   • onMemberAdded     → welcome SMS + WhatsApp
-//   • onPaymentRecorded → receipt SMS + WhatsApp
+// ── Workout World Gym WhatsApp Hooks — called from routes ──────────────────────
+//   • onMemberAdded     → welcome WhatsApp
+//   • onPaymentRecorded → receipt WhatsApp
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { sendSMS, sendWhatsApp } = require("./smsService");
+const { sendWhatsApp } = require("./smsService");
 const t = require("./smsTemplates");
 
 const fmtDate = (d) =>
@@ -23,15 +22,11 @@ const onMemberAdded = async (member) => {
     const startStr = fmtDate(member.membership_start);
     const endStr   = fmtDate(member.membership_end);
 
-    await Promise.allSettled([
-      sendSMS(phone, t.welcomeSMS(member.full_name)),
-      sendWhatsApp(phone, t.welcomeWA(member.full_name, member.membership_type, startStr, endStr)),
-    ]);
+    await sendWhatsApp(phone, t.welcomeWA(member.full_name, member.membership_type, startStr, endStr));
 
-    console.log(`📲 Welcome SMS+WA sent to ${member.full_name} (${phone})`);
+    console.log(`📲 Welcome WhatsApp sent to ${member.full_name} (${phone})`);
   } catch (err) {
-    // Non-blocking — don't crash the API if SMS fails
-    console.error("⚠️  onMemberAdded SMS error:", err.message);
+    console.error("⚠️  onMemberAdded WhatsApp error:", err.message);
   }
 };
 
@@ -45,14 +40,11 @@ const onPaymentRecorded = async (payment, memberPhone, memberName) => {
     const amount  = payment.amount;
     const plan    = payment.plan_name || payment.payment_for || "Membership";
 
-    await Promise.allSettled([
-      sendSMS(phone, t.paymentReceivedSMS(memberName, amount, dateStr)),
-      sendWhatsApp(phone, t.paymentReceivedWA(memberName, amount, dateStr, plan)),
-    ]);
+    await sendWhatsApp(phone, t.paymentReceivedWA(memberName, amount, dateStr, plan));
 
-    console.log(`📲 Payment receipt SMS+WA sent to ${memberName} (${phone})`);
+    console.log(`📲 Payment receipt WhatsApp sent to ${memberName} (${phone})`);
   } catch (err) {
-    console.error("⚠️  onPaymentRecorded SMS error:", err.message);
+    console.error("⚠️  onPaymentRecorded WhatsApp error:", err.message);
   }
 };
 
