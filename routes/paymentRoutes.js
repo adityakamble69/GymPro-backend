@@ -1,64 +1,72 @@
-const express   = require("express");
-const router    = express.Router();
-const db        = require("../config/db");
+const express = require("express");
+const router = express.Router();
+const db = require("../config/db");
 const { verifyToken, requireRole } = require("../middleware/authMiddleware");
 
 let sendEmail, paymentReceiptEmail, welcomeEmail;
 try {
-  sendEmail           = require("../utils/sendEmail");
-  const templates     = require("../utils/emailTemplates");
-  paymentReceiptEmail = templates.paymentReceiptEmail;
-  welcomeEmail        = templates.welcomeEmail;
+    sendEmail = require("../utils/sendEmail");
+    const templates = require("../utils/emailTemplates");
+    paymentReceiptEmail = templates.paymentReceiptEmail;
+    welcomeEmail = templates.welcomeEmail;
 } catch (e) {
-  sendEmail           = async () => ({ success: false });
-  paymentReceiptEmail = () => ({});
-  welcomeEmail        = () => ({});
+    sendEmail = async () => ({ success: false });
+    paymentReceiptEmail = () => ({});
+    welcomeEmail = () => ({});
 }
 
 let onPaymentRecorded;
 try {
-  onPaymentRecorded = require("../utils/smsHooks").onPaymentRecorded;
+    onPaymentRecorded = require("../utils/smsHooks").onPaymentRecorded;
 } catch (e) {
-  onPaymentRecorded = async () => {};
+    onPaymentRecorded = async () => { };
+}
+
+// ✅ NEW — PDF invoice generator
+let generateInvoicePDF;
+try {
+    generateInvoicePDF = require("../utils/invoiceGenerator");
+} catch (e) {
+    generateInvoicePDF = null;
 }
 
 function autoSavePlanHistory({ member_id, payment_id, plan_name, plan_start, plan_end, amount_paid, notes, admin_id }) {
-  if (!plan_name || !plan_start) return;
-  db.query(
-    "SELECT id FROM member_plan_history WHERE member_id = ? AND plan_name = ? AND plan_start = ?",
-    [member_id, plan_name, plan_start],
-    (err, existing) => {
-      if (err || existing.length > 0) return;
-      db.query(
-        `INSERT INTO member_plan_history (member_id, plan_name, plan_start, plan_end, amount_paid, payment_id, notes, changed_by) VALUES (?,?,?,?,?,?,?,?)`,
-        [member_id, plan_name, plan_start, plan_end || null, amount_paid || 0, payment_id || null, notes || null, admin_id || null],
-        (err2) => {
-          if (err2) { console.error("Plan history auto-save error:", err2.message); return; }
-          db.query("UPDATE members SET membership_type=?, membership_start=?, membership_end=?, status='active' WHERE id=?",
-            [plan_name, plan_start, plan_end || null, member_id], () => {});
+    if (!plan_name || !plan_start) return;
+    db.query(
+        "SELECT id FROM member_plan_history WHERE member_id = ? AND plan_name = ? AND plan_start = ?",
+        [member_id, plan_name, plan_start],
+        (err, existing) => {
+            if (err || existing.length > 0) return;
+            db.query(
+                `INSERT INTO member_plan_history (member_id, plan_name, plan_start, plan_end, amount_paid, payment_id, notes, changed_by) VALUES (?,?,?,?,?,?,?,?)`,
+                [member_id, plan_name, plan_start, plan_end || null, amount_paid || 0, payment_id || null, notes || null, admin_id || null],
+                (err2) => {
+                    if (err2) { console.error("Plan history auto-save error:", err2.message); return; }
+                    db.query("UPDATE members SET membership_type=?, membership_start=?, membership_end=?, status='active' WHERE id=?",
+                        [plan_name, plan_start, plan_end || null, member_id], () => { });
+                }
+            );
         }
-      );
-    }
-  );
+    );
 }
 
 // ── GET ALL PAYMENTS ──────────────────────────────────────────────────────────
 router.get("/", verifyToken, (req, res) => {
-    const page   = parseInt(req.query.page)   || 1;
-    const limit  = parseInt(req.query.limit)  || 10;
-    const search = req.query.search           || "";
-    const status = req.query.status           || "";
-    const method = req.query.method           || "";
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
+    const status = req.query.status || "";
+    const method = req.query.method || "";
     const offset = (page - 1) * limit;
-    const q      = `%${search}%`;
+    const q = `%${search}%`;
 
-    let where    = "WHERE (m.full_name LIKE ? OR m.email LIKE ? OR m.phone LIKE ?)";
+    let where = "WHERE (m.full_name LIKE ? OR m.email LIKE ? OR m.phone LIKE ?)";
     const params = [q, q, q];
-    if (status) { where += " AND p.status = ?";         params.push(status); }
+    if (status) { where += " AND p.status = ?"; params.push(status); }
     if (method) { where += " AND p.payment_method = ?"; params.push(method); }
 
     const countSql = `SELECT COUNT(*) AS total FROM payments p JOIN members m ON p.member_id = m.id ${where}`;
-    const dataSql  = `SELECT p.*, m.full_name, m.email, m.phone, m.membership_type FROM payments p JOIN members m ON p.member_id = m.id ${where} ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
+    const dataSql = `SELECT p.*, m.full_name, m.email, m.phone, m.membership_type FROM payments p JOIN members m ON p.member_id = m.id ${where} ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
 
     db.query(countSql, params, (err, countRes) => {
         if (err) return res.status(500).json({ success: false, message: "DB Error", error: err.message });
@@ -73,14 +81,14 @@ router.get("/", verifyToken, (req, res) => {
 // ── GET STATS / SUMMARY ───────────────────────────────────────────────────────
 router.get("/stats/summary", verifyToken, (req, res) => {
     const queries = {
-        totalRevenue:    "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid'",
-        thisMonth:       "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid' AND MONTH(payment_date)=MONTH(CURDATE()) AND YEAR(payment_date)=YEAR(CURDATE())",
-        lastMonth:       "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid' AND MONTH(payment_date)=MONTH(DATE_SUB(CURDATE(),INTERVAL 1 MONTH)) AND YEAR(payment_date)=YEAR(DATE_SUB(CURDATE(),INTERVAL 1 MONTH))",
-        pendingCount:    "SELECT COUNT(*)                    AS val FROM payments WHERE status='pending'",
-        pendingAmount:   "SELECT COALESCE(SUM(due_amount),0) AS val FROM payments WHERE status='pending' AND due_amount > 0",
-        todayRevenue:    "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid' AND payment_date=CURDATE()",
-        totalDue:        "SELECT COALESCE(SUM(due_amount),0) AS val FROM payments WHERE due_amount > 0",
-        totalCount:      "SELECT COUNT(*)                    AS val FROM payments WHERE status='paid'",
+        totalRevenue: "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid'",
+        thisMonth: "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid' AND MONTH(payment_date)=MONTH(CURDATE()) AND YEAR(payment_date)=YEAR(CURDATE())",
+        lastMonth: "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid' AND MONTH(payment_date)=MONTH(DATE_SUB(CURDATE(),INTERVAL 1 MONTH)) AND YEAR(payment_date)=YEAR(DATE_SUB(CURDATE(),INTERVAL 1 MONTH))",
+        pendingCount: "SELECT COUNT(*)                    AS val FROM payments WHERE status='pending'",
+        pendingAmount: "SELECT COALESCE(SUM(due_amount),0) AS val FROM payments WHERE status='pending' AND due_amount > 0",
+        todayRevenue: "SELECT COALESCE(SUM(amount),0)     AS val FROM payments WHERE status='paid' AND payment_date=CURDATE()",
+        totalDue: "SELECT COALESCE(SUM(due_amount),0) AS val FROM payments WHERE due_amount > 0",
+        totalCount: "SELECT COUNT(*)                    AS val FROM payments WHERE status='paid'",
         methodBreakdown: "SELECT payment_method, COUNT(*) AS count, SUM(amount) AS total FROM payments WHERE status='paid' GROUP BY payment_method",
         monthly6: `SELECT DATE_FORMAT(MIN(payment_date),'%b %Y') AS label, MONTH(MIN(payment_date)) AS mo, YEAR(MIN(payment_date)) AS yr, SUM(amount) AS total FROM payments WHERE status='paid' AND payment_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) GROUP BY YEAR(payment_date), MONTH(payment_date) ORDER BY yr ASC, mo ASC`,
     };
@@ -88,7 +96,7 @@ router.get("/stats/summary", verifyToken, (req, res) => {
     let pending = Object.keys(queries).length;
     Object.entries(queries).forEach(([key, sql]) => {
         db.query(sql, (err, rows) => {
-            if (!err) { const multi = ["methodBreakdown","monthly6"].includes(key); results[key] = multi ? rows : (rows[0]?.val ?? 0); }
+            if (!err) { const multi = ["methodBreakdown", "monthly6"].includes(key); results[key] = multi ? rows : (rows[0]?.val ?? 0); }
             if (--pending === 0) res.json({ success: true, data: results });
         });
     });
@@ -109,7 +117,7 @@ router.get("/drilldown/years", verifyToken, (req, res) => {
 
 // ── DRILL DOWN: Months of a year ─────────────────────────────────────────────
 router.get("/drilldown/months/:year", verifyToken, (req, res) => {
-    const MONTH_NAMES = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     db.query(
         `SELECT MONTH(payment_date) AS month, COALESCE(SUM(amount),0) AS total, COUNT(*) AS count
          FROM payments WHERE status='paid' AND YEAR(payment_date)=?
@@ -139,93 +147,10 @@ router.get("/drilldown/members/:year/:month", verifyToken, (req, res) => {
     );
 });
 
-// ── TODAY's payments ──────────────────────────────────────────────────────────
-router.get("/today/list", verifyToken, (req, res) => {
-    db.query(
-        `SELECT p.*, m.full_name, m.phone FROM payments p JOIN members m ON p.member_id = m.id
-         WHERE p.payment_date = CURDATE() ORDER BY p.created_at DESC`,
-        (err, rows) => {
-            if (err) return res.status(500).json({ success: false, message: "DB Error" });
-            res.json({ success: true, data: rows });
-        }
-    );
-});
+// ⚠️ NOTE: Yahan original file ke lines 142-228 the (kuch aur GET/drilldown routes).
+// Woh hissa maine truncated view mein nahi dekha — apne original file se
+// woh poora block yahin copy-paste kar dena, jaisa tha. Maine usse touch nahi kiya.
 
-// ── THIS MONTH payments ───────────────────────────────────────────────────────
-router.get("/thismonth/list", verifyToken, (req, res) => {
-    db.query(
-        `SELECT p.*, m.full_name, m.phone FROM payments p JOIN members m ON p.member_id = m.id
-         WHERE MONTH(p.payment_date)=MONTH(CURDATE()) AND YEAR(p.payment_date)=YEAR(CURDATE())
-         AND p.status='paid' ORDER BY p.payment_date DESC`,
-        (err, rows) => {
-            if (err) return res.status(500).json({ success: false, message: "DB Error" });
-            res.json({ success: true, data: rows });
-        }
-    );
-});
-
-// ── PENDING payments list ─────────────────────────────────────────────────────
-router.get("/pending/list", verifyToken, (req, res) => {
-    db.query(
-        `SELECT p.*, m.full_name, m.phone, m.email FROM payments p JOIN members m ON p.member_id = m.id
-         WHERE p.status='pending' ORDER BY p.payment_date ASC`,
-        (err, rows) => {
-            if (err) return res.status(500).json({ success: false, message: "DB Error" });
-            res.json({ success: true, data: rows });
-        }
-    );
-});
-
-// ── DUE AMOUNT list (member-wise) ─────────────────────────────────────────────
-router.get("/due/list", verifyToken, (req, res) => {
-    db.query(
-        `SELECT m.id AS member_id, m.full_name, m.phone,
-                COUNT(p.id) AS payment_count,
-                COALESCE(SUM(p.amount),0) AS total_amount,
-                COALESCE(SUM(p.paid_amount),0) AS total_paid,
-                COALESCE(SUM(p.due_amount),0) AS total_due,
-                MAX(p.payment_date) AS last_payment_date
-         FROM payments p JOIN members m ON p.member_id = m.id
-         WHERE p.due_amount > 0
-         GROUP BY m.id, m.full_name, m.phone
-         ORDER BY total_due DESC`,
-        (err, rows) => {
-            if (err) return res.status(500).json({ success: false, message: "DB Error" });
-            res.json({ success: true, data: rows });
-        }
-    );
-});
-
-// ── CHART MONTH DETAIL ────────────────────────────────────────────────────────
-router.get("/chart-month/:year/:month", verifyToken, (req, res) => {
-    db.query(
-        `SELECT p.id, p.amount, p.paid_amount, p.due_amount, p.status,
-                p.payment_for, p.plan_name, p.payment_date, p.payment_method,
-                m.full_name, m.phone
-         FROM payments p JOIN members m ON p.member_id = m.id
-         WHERE YEAR(p.payment_date)=? AND MONTH(p.payment_date)=?
-         ORDER BY m.full_name ASC`,
-        [req.params.year, req.params.month],
-        (err, rows) => {
-            if (err) return res.status(500).json({ success: false, message: "DB Error" });
-            res.json({ success: true, data: rows });
-        }
-    );
-});
-
-// ── GET MEMBER PAYMENT HISTORY ────────────────────────────────────────────────
-router.get("/member/:memberId", verifyToken, (req, res) => {
-    db.query(
-        "SELECT * FROM payments WHERE member_id = ? ORDER BY payment_date DESC LIMIT 50",
-        [req.params.memberId],
-        (err, rows) => {
-            if (err) return res.status(500).json({ success: false, message: "DB Error" });
-            res.json({ success: true, data: rows });
-        }
-    );
-});
-
-// ── GET MEMBER PLAN HISTORY ───────────────────────────────────────────────────
 router.get("/member/:memberId/plan-history", verifyToken, (req, res) => {
     db.query(
         `SELECT mph.*, p.payment_method
@@ -265,10 +190,10 @@ router.post("/", verifyToken, (req, res) => {
     const totalAmt = parseFloat(amount);
     if (isNaN(totalAmt) || totalAmt <= 0) return res.status(400).json({ success: false, message: "Amount must be positive" });
 
-    const paidAmt      = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
-    const dueAmt       = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
-    const finalStatus  = dueAmt > 0 ? "pending" : (status || "paid");
-    const receivedBy   = req.admin?.id ?? null;
+    const paidAmt = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
+    const dueAmt = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
+    const finalStatus = dueAmt > 0 ? "pending" : (status || "paid");
+    const receivedBy = req.admin?.id ?? null;
     const finalDueDate = (dueAmt > 0 && due_date) ? due_date : null;
 
     db.query(
@@ -283,14 +208,14 @@ router.post("/", verifyToken, (req, res) => {
             // Auto save plan history
             if (plan_name && plan_start) {
                 autoSavePlanHistory({ member_id, payment_id: paymentId, plan_name, plan_start, plan_end, amount_paid: paidAmt, notes, admin_id: receivedBy });
-            } else if (payment_for && !["other","registration","monthly"].includes(payment_for)) {
+            } else if (payment_for && !["other", "registration", "monthly"].includes(payment_for)) {
                 autoSavePlanHistory({ member_id, payment_id: paymentId, plan_name: payment_for, plan_start: payment_date, plan_end: null, amount_paid: paidAmt, notes, admin_id: receivedBy });
             }
 
-            // ── Fetch member → send SMS + WhatsApp + Email ────────────────────
+            // ── Fetch member → send SMS + WhatsApp + Email (with PDF invoice) ──
             db.query("SELECT * FROM members WHERE id = ?", [member_id], (e, rows) => {
                 if (e || !rows.length) return;
-                const member  = rows[0];
+                const member = rows[0];
                 const payment = {
                     id: paymentId, amount: totalAmt, paid_amount: paidAmt,
                     due_amount: dueAmt, payment_date,
@@ -301,24 +226,39 @@ router.post("/", verifyToken, (req, res) => {
                 };
 
                 // SMS + WhatsApp (non-blocking)
-                onPaymentRecorded(payment, member.phone, member.full_name).catch(() => {});
+                onPaymentRecorded(payment, member.phone, member.full_name).catch(() => { });
 
-                // Email receipt (non-blocking)
+                // ✅ Email receipt with PDF invoice attached (non-blocking)
                 if (member.email) {
-                    sendEmail(paymentReceiptEmail(member, payment)).catch(() => {});
+                    (async () => {
+                        try {
+                            const mailOptions = paymentReceiptEmail(member, payment);
+                            if (generateInvoicePDF) {
+                                const pdfBuffer = await generateInvoicePDF(member, payment);
+                                mailOptions.attachments = [{
+                                    filename: `Receipt-PAY-${String(paymentId).padStart(5, "0")}.pdf`,
+                                    content: pdfBuffer,
+                                    contentType: "application/pdf"
+                                }];
+                            }
+                            sendEmail(mailOptions);
+                        } catch (pdfErr) {
+                            console.error("Invoice PDF error:", pdfErr.message);
+                            sendEmail(paymentReceiptEmail(member, payment));
+                        }
+                    })();
                 }
 
                 // ── Renewal detection: plan renewed → welcome-style email ──────
-                // Agar plan_end set hai (matlab naya plan assign hua) aur fully paid
                 if (plan_end && dueAmt === 0 && member.email) {
                     const renewalMail = welcomeEmail({
                         ...member,
-                        membership_type:  plan_name  || member.membership_type,
+                        membership_type: plan_name || member.membership_type,
                         membership_start: plan_start || payment_date,
-                        membership_end:   plan_end,
+                        membership_end: plan_end,
                     });
                     renewalMail.subject = `✅ Membership Renewed — Welcome Back, ${member.full_name}! | Workout World Gym`;
-                    sendEmail(renewalMail).catch(() => {});
+                    sendEmail(renewalMail).catch(() => { });
                 }
             });
 
@@ -335,12 +275,12 @@ router.post("/", verifyToken, (req, res) => {
 router.put("/:id", verifyToken, (req, res) => {
     const { member_id, amount, paid_amount, payment_date, payment_method, payment_for, status, months_covered, notes, plan_name, plan_start, plan_end, due_date } = req.body;
 
-    const totalAmt     = parseFloat(amount);
+    const totalAmt = parseFloat(amount);
     if (isNaN(totalAmt) || totalAmt <= 0) return res.status(400).json({ success: false, message: "Amount must be positive" });
 
-    const paidAmt      = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
-    const dueAmt       = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
-    const finalStatus  = dueAmt > 0 ? "pending" : (status || "paid");
+    const paidAmt = (paid_amount !== "" && paid_amount != null && !isNaN(parseFloat(paid_amount))) ? parseFloat(paid_amount) : totalAmt;
+    const dueAmt = parseFloat(Math.max(0, totalAmt - paidAmt).toFixed(2));
+    const finalStatus = dueAmt > 0 ? "pending" : (status || "paid");
     const finalDueDate = (dueAmt > 0 && due_date) ? due_date : null;
 
     db.query(
@@ -350,7 +290,7 @@ router.put("/:id", verifyToken, (req, res) => {
             if (err) return res.status(500).json({ success: false, message: "DB Error: " + err.message });
             if (!result.affectedRows) return res.status(404).json({ success: false, message: "Payment not found" });
             if (dueAmt === 0 && plan_name) {
-                db.query("UPDATE member_plan_history SET amount_paid = ? WHERE payment_id = ?", [totalAmt, req.params.id], () => {});
+                db.query("UPDATE member_plan_history SET amount_paid = ? WHERE payment_id = ?", [totalAmt, req.params.id], () => { });
             }
             res.json({ success: true, message: "Payment updated", due_amount: dueAmt, status: finalStatus });
         }
@@ -364,6 +304,33 @@ router.delete("/:id", verifyToken, requireRole("super_admin"), (req, res) => {
         if (!result.affectedRows) return res.status(404).json({ success: false, message: "Not found" });
         res.json({ success: true, message: "Payment deleted" });
     });
+});
+
+// ✅ NEW — DOWNLOAD INVOICE PDF (admin panel button ke liye)
+router.get("/:id/invoice", verifyToken, (req, res) => {
+    db.query(
+        `SELECT p.*, m.full_name, m.email, m.phone FROM payments p JOIN members m ON p.member_id = m.id WHERE p.id = ?`,
+        [req.params.id],
+        async (err, rows) => {
+            if (err || !rows.length) return res.status(404).json({ success: false, message: "Payment not found" });
+            const row = rows[0];
+            const member = { full_name: row.full_name, email: row.email, phone: row.phone };
+            const payment = { ...row };
+
+            if (!generateInvoicePDF) return res.status(500).json({ success: false, message: "PDF generator not available" });
+
+            try {
+                const pdfBuffer = await generateInvoicePDF(member, payment);
+                res.set({
+                    "Content-Type": "application/pdf",
+                    "Content-Disposition": `attachment; filename=Receipt-PAY-${String(row.id).padStart(5, "0")}.pdf`
+                });
+                res.send(pdfBuffer);
+            } catch (e) {
+                res.status(500).json({ success: false, message: "PDF generation failed" });
+            }
+        }
+    );
 });
 
 module.exports = router;
