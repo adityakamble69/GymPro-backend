@@ -2,10 +2,8 @@ const express   = require("express");
 const router    = express.Router();
 const db        = require("../config/db");
 const { verifyToken } = require("../middleware/authMiddleware");
-const sendEmail = require("../utils/sendEmail");
-const { inquiryAlertEmail } = require("../utils/emailTemplates");
 
-// ── PUBLIC: Submit inquiry — admin alert email trigger ────────────────────────
+// ── PUBLIC: Submit inquiry ────────────────────────────────────────────────────
 router.post("/submit", (req, res) => {
     const { full_name, email, phone, gender, date_of_birth, address, message, membership_interest, preferred_time, photo } = req.body;
 
@@ -31,11 +29,7 @@ router.post("/submit", (req, res) => {
             return res.status(500).json({ success: false, message: err.message });
         }
 
-        // ✅ Send admin alert email (non-blocking)
-        sendEmail(inquiryAlertEmail({ full_name, email, phone, message, membership_interest, preferred_time }))
-          .then(r => console.log(`Inquiry alert email [${full_name}]:`, r.success ? "✅ sent" : "❌ " + r.error))
-          .catch(e => console.error("❌ sendEmail crash:", e.message));
-
+        console.log(`✅ New inquiry from ${full_name} (${phone})`);
         res.status(201).json({ success: true, message: "Thank you! We will contact you soon." });
     });
 });

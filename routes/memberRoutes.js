@@ -1,25 +1,9 @@
-// routes/memberRoutes.js  — COMPLETE FILE with manual email endpoint added at bottom
-
+// routes/memberRoutes.js
 const express   = require("express");
 const router    = express.Router();
 const db        = require("../config/db");
 const { verifyToken, requireRole } = require("../middleware/authMiddleware");
-
-// ── Safe email import ─────────────────────────────────────────────────────────
-let sendEmail, welcomeEmail, expiryWarningEmail, paymentReceiptEmail;
-try {
-  sendEmail            = require("../utils/sendEmail");
-  const templates      = require("../utils/emailTemplates");
-  welcomeEmail         = templates.welcomeEmail;
-  expiryWarningEmail   = templates.expiryWarningEmail;
-  paymentReceiptEmail  = templates.paymentReceiptEmail;
-} catch (e) {
-  console.warn("⚠️  Email utils not found — emails disabled:", e.message);
-  sendEmail           = async () => ({ success: false, error: "Email not configured" });
-  welcomeEmail        = () => ({});
-  expiryWarningEmail  = () => ({});
-  paymentReceiptEmail = () => ({});
-}
+const { onMemberAdded } = require("../utils/smsHooks");
 
 // ── GET all members (search + pagination) ─────────────────────────────────────
 router.get("/", verifyToken, (req, res) => {
@@ -63,14 +47,14 @@ router.post("/", verifyToken, (req, res) => {
     date_of_birth, membership_type, membership_start, membership_end, status, photo
   } = req.body;
 
-  if (!full_name || !email || !phone)
-    return res.status(400).json({ success: false, message: "Name, email, and phone are required" });
+  if (!full_name || !phone)
+    return res.status(400).json({ success: false, message: "Name and phone are required" });
 
   const clean = (d) => (d && String(d).trim() !== "") ? d : null;
 
   db.query(
     "INSERT INTO members (full_name,email,phone,address,gender,date_of_birth,membership_type,membership_start,membership_end,status,photo) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-    [full_name, email, phone, clean(address), clean(gender), clean(date_of_birth),
+    [full_name, email || null, phone, clean(address), clean(gender), clean(date_of_birth),
      clean(membership_type), clean(membership_start), clean(membership_end), status || "active", photo || null],
     (err, result) => {
       if (err) {
@@ -79,11 +63,9 @@ router.post("/", verifyToken, (req, res) => {
         return res.status(500).json({ success: false, message: "DB Error: " + err.message });
       }
 
-      // Welcome email (non-blocking)
-      if (email) {
-        sendEmail(welcomeEmail({ full_name, email, phone, membership_type, membership_start, membership_end }))
-          .catch(e => console.error("Welcome email error:", e.message));
-      }
+      // Welcome WhatsApp (non-blocking)
+      onMemberAdded({ full_name, phone, membership_type, membership_start, membership_end })
+        .catch(e => console.error("Welcome WA error:", e.message));
 
       res.status(201).json({ success: true, message: "Member added", id: result.insertId });
     }
@@ -101,7 +83,7 @@ router.put("/:id", verifyToken, (req, res) => {
 
   db.query(
     "UPDATE members SET full_name=?,email=?,phone=?,address=?,gender=?,date_of_birth=?,membership_type=?,membership_start=?,membership_end=?,status=?,photo=? WHERE id=?",
-    [full_name, email, phone, clean(address), clean(gender), clean(date_of_birth),
+    [full_name, email || null, phone, clean(address), clean(gender), clean(date_of_birth),
      clean(membership_type), clean(membership_start), clean(membership_end),
      status || "active", photo || null, req.params.id],
     (err, result) => {
@@ -164,7 +146,6 @@ router.post("/:id/plan-history", verifyToken, (req, res) => {
 router.put("/:id/plan-history/:hid", verifyToken, (req, res) => {
   const { plan_name, plan_start, plan_end, amount_paid, notes, payment_method } = req.body;
 
-  // 1. Update member_plan_history
   db.query(
     `UPDATE member_plan_history SET plan_name=?, plan_start=?, plan_end=?, amount_paid=?, notes=?
      WHERE id=? AND member_id=?`,
@@ -174,7 +155,6 @@ router.put("/:id/plan-history/:hid", verifyToken, (req, res) => {
       if (err) return res.status(500).json({ success: false, message: "DB Error: " + err.message });
       if (!result.affectedRows) return res.status(404).json({ success: false, message: "Not found" });
 
-      // 2. Fetch payment_id linked to this plan history row
       db.query(
         "SELECT payment_id FROM member_plan_history WHERE id = ?",
         [req.params.hid],
@@ -183,19 +163,16 @@ router.put("/:id/plan-history/:hid", verifyToken, (req, res) => {
           const paymentId = rows[0].payment_id;
           if (!paymentId) return res.json({ success: true, message: "Plan history updated" });
 
-          // 3. Sync linked payment record
-          const paidAmt  = parseFloat(amount_paid) || 0;
-          const dueAmt   = 0; // editing bill = assuming it's settled; adjust if needed
+          const paidAmt = parseFloat(amount_paid) || 0;
           db.query(
             `UPDATE payments
              SET plan_name=?, plan_start=?, plan_end=?, paid_amount=?, amount=?,
                  due_amount=?, notes=?, payment_method=COALESCE(?,payment_method)
              WHERE id=?`,
             [plan_name, plan_start, plan_end || null, paidAmt, paidAmt,
-             dueAmt, notes || null, payment_method || null, paymentId],
-            () => {} // non-blocking — plan_history is the source of truth here
+             0, notes || null, payment_method || null, paymentId],
+            () => {}
           );
-
           res.json({ success: true, message: "Plan history updated" });
         }
       );
@@ -214,90 +191,6 @@ router.delete("/:id/plan-history/:hid", verifyToken, requireRole("super_admin"),
       res.json({ success: true, message: "Deleted" });
     }
   );
-});
-
-// ── ✉️  MANUAL EMAIL SEND — Admin triggers from Members page ─────────────────
-// POST /api/members/:id/send-email
-// body: { type: "expiry_warning" | "payment_reminder" | "welcome" | "renewal_done" }
-router.post("/:id/send-email", verifyToken, async (req, res) => {
-  const { type } = req.body;
-
-  if (!type) return res.status(400).json({ success: false, message: "Email type required" });
-
-  // Fetch member
-  db.query("SELECT * FROM members WHERE id = ?", [req.params.id], async (err, rows) => {
-    if (err) return res.status(500).json({ success: false, message: "DB Error" });
-    if (!rows.length) return res.status(404).json({ success: false, message: "Member not found" });
-
-    const member = rows[0];
-
-    if (!member.email)
-      return res.status(400).json({ success: false, message: "Member has no email address" });
-
-    try {
-      let mailOptions;
-      let label;
-
-      if (type === "welcome") {
-        mailOptions = welcomeEmail(member);
-        label = "Welcome";
-
-      } else if (type === "expiry_warning") {
-        // Calculate days left
-        const today    = new Date();
-        const endDate  = member.membership_end ? new Date(member.membership_end) : null;
-        const daysLeft = endDate
-          ? Math.ceil((endDate - today) / (1000 * 60 * 60 * 24))
-          : 0;
-        mailOptions = expiryWarningEmail(member, Math.max(daysLeft, 0));
-        label = "Expiry Warning";
-
-      } else if (type === "payment_reminder") {
-        // Fetch latest pending payment
-        const payments = await new Promise((resolve, reject) => {
-          db.query(
-            "SELECT * FROM payments WHERE member_id = ? ORDER BY payment_date DESC LIMIT 1",
-            [member.id],
-            (e, r) => e ? reject(e) : resolve(r)
-          );
-        });
-        const lastPayment = payments[0] || {
-          id: 0, amount: 0, paid_amount: 0, due_amount: 0,
-          payment_date: new Date(), payment_method: "cash",
-          payment_for: member.membership_type || "membership",
-          months_covered: 1, notes: null, plan_name: member.membership_type
-        };
-        mailOptions = paymentReceiptEmail(member, lastPayment);
-        label = "Payment Reminder";
-
-      } else if (type === "renewal_done") {
-        // Renewal = welcome email with updated dates
-        mailOptions = welcomeEmail(member);
-        // Override subject for renewal
-        mailOptions.subject = `✅ Membership Renewed — Welcome Back, ${member.full_name}! | Workout World Gym`;
-        label = "Renewal Confirmation";
-
-      } else {
-        return res.status(400).json({ success: false, message: "Unknown email type: " + type });
-      }
-
-      const result = await sendEmail(mailOptions);
-
-      if (result.success) {
-        res.json({
-          success: true,
-          message: `${label} email sent to ${member.email}`,
-          messageId: result.messageId
-        });
-      } else {
-        res.status(500).json({ success: false, message: "Email failed: " + result.error });
-      }
-
-    } catch (e) {
-      console.error("Manual email error:", e.message);
-      res.status(500).json({ success: false, message: "Server error: " + e.message });
-    }
-  });
 });
 
 module.exports = router;
