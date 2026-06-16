@@ -17,12 +17,8 @@ const notifRoutes          = require("./routes/notificationRoutes");
 const profileRoutes        = require("./routes/profileRoutes");
 const inquiryRoutes        = require("./routes/inquiryRoutes");
 const membershipPlanRoutes = require("./routes/membershipPlanRoutes");
+const reminderRoutes       = require("./routes/reminderRoutes");
 const { startReminderCron } = require("./utils/reminderCron");
-const reminderRoutes = require("./routes/reminderRoutes");
-
-// ── Email & Cron ──────────────────────────────────────────────────────────────
-require("./config/mailer");                               // init + verify Gmail on startup
-const checkExpiringMemberships = require("./utils/expiryChecker");
 
 const app = express();
 
@@ -43,7 +39,8 @@ app.use("/api/notifications",    notifRoutes);
 app.use("/api/profile",          profileRoutes);
 app.use("/api/inquiries",        inquiryRoutes);
 app.use("/api/membership-plans", membershipPlanRoutes);
-app.use("/api/reminders", reminderRoutes);
+app.use("/api/reminders",        reminderRoutes);
+
 startReminderCron();
 
 // ── Serve Public Inquiry Form ─────────────────────────────────────────────────
@@ -53,11 +50,5 @@ app.get("/", (req, res) => res.send("GymPro API Running ⚡"));
 
 // ── Start Server ──────────────────────────────────────────────────────────────
 app.listen(process.env.PORT, () => {
-    console.log(`🚀 Server running on port ${process.env.PORT}`);
-
-    // ✅ Expiry check — run once on startup, then every 24 hours
-    setTimeout(() => {
-        checkExpiringMemberships();
-        setInterval(checkExpiringMemberships, 24 * 60 * 60 * 1000);
-    }, 3000); // 3 second delay — wait for DB to be ready
+  console.log(`🚀 Server running on port ${process.env.PORT}`);
 });
