@@ -60,6 +60,30 @@ router.get("/", verifyToken, (req, res) => {
     });
 });
 
+// ── GET PAYMENTS BY MEMBER ────────────────────────────────────────────────────
+router.get("/member/:memberId", verifyToken, (req, res) => {
+    const { memberId } = req.params;
+    const page  = parseInt(req.query.page)  || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const countSql = `SELECT COUNT(*) AS total FROM payments WHERE member_id = ?`;
+    const dataSql  = `SELECT * FROM payments WHERE member_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+
+    db.query(countSql, [memberId], (err, countRes) => {
+        if (err) return res.status(500).json({ success: false, message: "DB Error", error: err.message });
+        const total = countRes[0].total;
+        db.query(dataSql, [memberId, limit, offset], (err2, rows) => {
+            if (err2) return res.status(500).json({ success: false, message: "DB Error", error: err2.message });
+            res.json({
+                success: true,
+                data: rows,
+                pagination: { total, page, limit, totalPages: Math.ceil(total / limit) }
+            });
+        });
+    });
+});
+
 // ── GET STATS / SUMMARY ───────────────────────────────────────────────────────
 router.get("/stats/summary", verifyToken, (req, res) => {
     const queries = {
