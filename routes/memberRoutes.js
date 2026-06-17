@@ -44,7 +44,7 @@ router.get("/:id", verifyToken, (req, res) => {
 router.post("/", verifyToken, (req, res) => {
   const {
     full_name, email, phone, address, gender,
-    date_of_birth, membership_type, membership_start, membership_end, status, photo
+    date_of_birth, membership_type, membership_start, membership_end, status, photo, aadhar_card
   } = req.body;
 
   if (!full_name || !phone)
@@ -53,9 +53,9 @@ router.post("/", verifyToken, (req, res) => {
   const clean = (d) => (d && String(d).trim() !== "") ? d : null;
 
   db.query(
-    "INSERT INTO members (full_name,email,phone,address,gender,date_of_birth,membership_type,membership_start,membership_end,status,photo) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO members (full_name,email,phone,address,gender,date_of_birth,membership_type,membership_start,membership_end,status,photo,aadhar_card) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
     [full_name, email || null, phone, clean(address), clean(gender), clean(date_of_birth),
-     clean(membership_type), clean(membership_start), clean(membership_end), status || "active", photo || null],
+     clean(membership_type), clean(membership_start), clean(membership_end), status || "active", photo || null, aadhar_card || null],
     (err, result) => {
       if (err) {
         if (err.code === "ER_DUP_ENTRY")
@@ -76,16 +76,16 @@ router.post("/", verifyToken, (req, res) => {
 router.put("/:id", verifyToken, (req, res) => {
   const {
     full_name, email, phone, address, gender,
-    date_of_birth, membership_type, membership_start, membership_end, status, photo
+    date_of_birth, membership_type, membership_start, membership_end, status, photo, aadhar_card
   } = req.body;
 
   const clean = (d) => (d && String(d).trim() !== "") ? d : null;
 
   db.query(
-    "UPDATE members SET full_name=?,email=?,phone=?,address=?,gender=?,date_of_birth=?,membership_type=?,membership_start=?,membership_end=?,status=?,photo=? WHERE id=?",
+    "UPDATE members SET full_name=?,email=?,phone=?,address=?,gender=?,date_of_birth=?,membership_type=?,membership_start=?,membership_end=?,status=?,photo=?,aadhar_card=? WHERE id=?",
     [full_name, email || null, phone, clean(address), clean(gender), clean(date_of_birth),
      clean(membership_type), clean(membership_start), clean(membership_end),
-     status || "active", photo || null, req.params.id],
+     status || "active", photo || null, aadhar_card || null, req.params.id],
     (err, result) => {
       if (err) return res.status(500).json({ success: false, message: "DB Error: " + err.message });
       if (!result.affectedRows) return res.status(404).json({ success: false, message: "Not found" });

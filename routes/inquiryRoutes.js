@@ -5,14 +5,14 @@ const { verifyToken } = require("../middleware/authMiddleware");
 
 // ── PUBLIC: Submit inquiry ────────────────────────────────────────────────────
 router.post("/submit", (req, res) => {
-    const { full_name, email, phone, gender, date_of_birth, address, message, membership_interest, preferred_time, photo } = req.body;
+    const { full_name, email, phone, gender, date_of_birth, address, message, membership_interest, preferred_time, photo, aadhar_card } = req.body;
 
     if (!full_name || !email || !phone)
         return res.status(400).json({ success: false, message: "Name, email and phone are required" });
 
     const sql = `INSERT INTO inquiries
-        (full_name, email, phone, gender, date_of_birth, address, message, membership_interest, preferred_time, photo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        (full_name, email, phone, gender, date_of_birth, address, message, membership_interest, preferred_time, photo, aadhar_card)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
     db.query(sql, [
         full_name, email, phone,
@@ -23,6 +23,7 @@ router.post("/submit", (req, res) => {
         membership_interest || "not_sure",
         preferred_time      || "anytime",
         photo               || null,
+        aadhar_card         || null,
     ], (err, result) => {
         if (err) {
             console.error("❌ Inquiry submit DB error:", err.code, err.message);
