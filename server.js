@@ -19,10 +19,6 @@ const inquiryRoutes        = require("./routes/inquiryRoutes");
 const membershipPlanRoutes = require("./routes/membershipPlanRoutes");
 const fingerprintRoutes    = require("./routes/fingerprintRoutes");  // ← NEW
 
-// ── Email & Cron ──────────────────────────────────────────────────────────────
-require("./config/mailer");
-const checkExpiringMemberships = require("./utils/expiryChecker");
-
 const app = express();
 
 app.set("trust proxy", 1);
@@ -68,10 +64,4 @@ app.listen(process.env.PORT, async () => {
             }
         }, 5000); // 5 second delay
     }
-
-    // ── Expiry email check ────────────────────────────────────────────────────
-    setTimeout(() => {
-        checkExpiringMemberships();
-        setInterval(checkExpiringMemberships, 24 * 60 * 60 * 1000);
-    }, 3000);
 });
